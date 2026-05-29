@@ -768,103 +768,33 @@ RULES:
 
 [{{"name":"...","title":"...","email":"...","linkedin":"..."}}]"""
 
-            try:
-                async with httpx.AsyncClient(timeout=30) as client:
-                    resp = await client.post(
-                        "https://api.aimlapi.com/v1/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {AIML_API_KEY}",
-                            "Content-Type":  "application/json",
-                        },
-                        json={
-                            "model":       AIML_MODEL,
-                            "messages":    [{"role": "user", "content": prompt}],
-                            "temperature": 0.2,
-                        },
-                    )
-                    if resp.status_code == 200:
-                        raw      = resp.json()["choices"][0]["message"]["content"].strip()
-                        if raw.startswith("`"):
-                            lines = raw.splitlines()
-                            lines = lines[1:] if lines[0].startswith("`") else lines
-                            lines = lines[:-1] if lines and lines[-1].startswith("`") else lines
-                            raw   = "\n".join(lines).strip()
-                        contacts = _safe_parse_signals(raw)
-                        if contacts:
-                            print(f"[Enrichment] Found {len(contacts)} real contacts for {industry}")
-                            return contacts
-            except Exception as e:
-                print(f"[Enrichment] Claude error: {e}")
-
-    else:
-        # Real company name — search directly for their leadership
-        print(f"[Enrichment] Searching contacts for real company: '{company_name}'...")
-
-        serp_queries = [
-            f'"{company_name}" CEO OR founder OR "VP of Sales" OR CTO site:linkedin.com',
-            f'"{company_name}" leadership team OR executives OR "about us"',
-        ]
-
-        for q in serp_queries:
-            try:
-                res = await search_web_async(q, num=5)
-                if res.get("success") and res.get("results"):
-                    for r in res["results"]:
-                        snippet = r.get("snippet", "").strip()
-                        title   = r.get("title", "").strip()
-                        url     = r.get("url", "")
-                        if snippet and len(snippet) > 20:
-                            collected.append(f"Source: {url}\nTitle: {title}\nSnippet: {snippet}")
-            except Exception as e:
-                print(f"[Enrichment] SERP error: {e}")
-
-        # Also try scraping company website
-        for url in [f"https://www.{safe_domain}.com/about", f"https://www.{safe_domain}.com/team"]:
-            try:
-                res = scrape_url(url)
-                if res.get("success") and res.get("content") and len(res["content"]) > 300:
-                    collected.append(f"Company website:\n{res['content'][:3000]}")
-                    break
-            except Exception:
-                pass
-
-        if collected:
-            combined = "\n\n".join(collected)
-            prompt = f"""Extract real decision-maker contacts for '{company_name}' ({industry}) from this data.
-
-{combined}
-
-Return 2 contacts as JSON array:
-[{{"name":"...","title":"...","email":"...","linkedin":"..."}}]
-
-Rules: Only real names from data. Construct email as firstname.lastname@{safe_domain}.com if not found."""
-
-            try:
-                async with httpx.AsyncClient(timeout=30) as client:
-                    resp = await client.post(
-                        "https://api.aimlapi.com/v1/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {AIML_API_KEY}",
-                            "Content-Type":  "application/json",
-                        },
-                        json={
-                            "model":       AIML_MODEL,
-                            "messages":    [{"role": "user", "content": prompt}],
-                            "temperature": 0.2,
-                        },
-                    )
-                    if resp.status_code == 200:
-                        raw      = resp.json()["choices"][0]["message"]["content"].strip()
-                        if raw.startswith("`"):
-                            lines = raw.splitlines()
-                            lines = lines[1:] if lines[0].startswith("`") else lines
-                            lines = lines[:-1] if lines and lines[-1].startswith("`") else lines
-                            raw   = "\n".join(lines).strip()
-                        contacts = _safe_parse_signals(raw)
-                        if contacts:
-                            return contacts
-            except Exception as e:
-                print(f"[Enrichment] Claude error: {e}")
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    "https://api.aimlapi.com/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {AIML_API_KEY}",
+                        "Content-Type":  "application/json",
+                    },
+                    json={
+                        "model":       AIML_MODEL,
+                        "messages":    [{"role": "user", "content": prompt}],
+                        "temperature": 0.2,
+                    },
+                )
+                if resp.status_code == 200:
+                    raw      = resp.json()["choices"][0]["message"]["content"].strip()
+                    if raw.startswith("`"):
+                        lines = raw.splitlines()
+                        lines = lines[1:] if lines[0].startswith("`") else lines
+                        lines = lines[:-1] if lines and lines[-1].startswith("`") else lines
+                        raw   = "\n".join(lines).strip()
+                    contacts = _safe_parse_signals(raw)
+                    if contacts:
+                        print(f"[Enrichment] Found {len(contacts)} real contacts for {company_name}")
+                        return contacts
+        except Exception as e:
+            print(f"[Enrichment] Claude error: {e}")
 
     # ── Fallback ──────────────────────────────────────────────────────────────
     print(f"[Enrichment] Returning search links for manual lookup")

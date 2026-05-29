@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
+  // Dev server proxy — only active during `npm run dev`, not in production builds
   server: {
     proxy: {
       '/api': {
@@ -14,7 +15,6 @@ export default defineConfig({
             proxyReq.setHeader('Accept', 'text/event-stream');
           });
           proxy.on('proxyRes', (proxyRes) => {
-            // Force no buffering for SSE
             if (proxyRes.headers['content-type']?.includes('text/event-stream')) {
               proxyRes.headers['x-accel-buffering'] = 'no';
               proxyRes.headers['cache-control'] = 'no-cache';
@@ -23,5 +23,11 @@ export default defineConfig({
         },
       },
     },
+  },
+  // Production build — output to dist/
+  // VITE_API_URL is intentionally empty for Vercel (same domain as backend)
+  build: {
+    outDir: 'dist',
+    emptyOutDir: true,
   },
 })

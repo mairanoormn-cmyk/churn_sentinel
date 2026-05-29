@@ -194,8 +194,8 @@ def get_recent_signals(limit: int = 50):
 # Initialize database on module import with error handling
 try:
     init_db()
-    print("✅ PostgreSQL Database initialized successfully.")
+    print("[DB] PostgreSQL Database initialized successfully.")
 except Exception as e:
-    print(f"⚠️  Database initialization warning: {e}")
-    print("   Attempting to proceed anyway — database may be unavailable.")
+    print(f"[DB] Warning: Database initialization issue: {e}")
+    print("   Attempting to proceed anyway -- database may be unavailable.")
     print("   Ensure DATABASE_URL is set in .env file.")

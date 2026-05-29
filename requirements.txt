@@ -1,0 +1,16 @@
+# Vanta — Python Dependencies (Vercel-compatible)
+# Note: cognee removed — it's a heavy ML library not used in core code
+# Note: asyncio-contextmanager removed — already in Python 3.10+ stdlib
+
+fastapi
+uvicorn[standard]
+pydantic
+python-multipart
+requests
+python-dotenv
+beautifulsoup4
+lxml
+psycopg2-binary
+httpx
+mcp
+aiohttp

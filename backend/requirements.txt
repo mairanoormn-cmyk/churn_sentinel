@@ -10,5 +10,3 @@ psycopg2-binary
 httpx
 mcp
 aiohttp
-asyncio-contextmanager
-cognee

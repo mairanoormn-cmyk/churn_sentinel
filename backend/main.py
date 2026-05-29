@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Optional, List, Union
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -33,6 +34,8 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://localhost:5174",
         "http://127.0.0.1:5174",
+        # Vercel production domains
+        "https://*.vercel.app",
     ],
     allow_credentials=False,
     allow_methods=["*"],
@@ -356,4 +359,46 @@ async def enrich_endpoint(request: EnrichRequest):
         return {"success": True, "contacts": contacts}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+# ── Serve built React frontend (production) ───────────────────────────────────
+# The frontend is built into frontend/dist/ by the Vercel buildCommand.
+# FastAPI serves static assets and falls back to index.html for SPA routing.
+_dist_dir = Path(__file__).parent.parent / "frontend" / "dist"
+
+if _dist_dir.exists() and _dist_dir.is_dir():
+    # Serve hashed JS/CSS assets from /assets/*
+    _assets_dir = _dist_dir / "assets"
+    if _assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(_assets_dir)), name="assets")
+
+    @app.get("/favicon.svg", include_in_schema=False)
+    async def favicon():
+        fp = _dist_dir / "favicon.svg"
+        if fp.exists():
+            return FileResponse(str(fp))
+        from fastapi import Response
+        return Response(status_code=404)
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_react_app(full_path: str):
+        """SPA catch-all — serve static files or index.html for client-side routing."""
+        # Resolve requested path safely (prevent path traversal)
+        resolved_dist = _dist_dir.resolve()
+        file_path = (resolved_dist / full_path).resolve()
+
+        # Block path traversal attempts
+        if not str(file_path).startswith(str(resolved_dist)):
+            raise HTTPException(status_code=403, detail="Forbidden")
+
+        # Serve the file if it physically exists
+        if file_path.exists() and file_path.is_file():
+            return FileResponse(str(file_path))
+
+        # SPA fallback — all unknown paths get index.html
+        index_path = _dist_dir / "index.html"
+        if index_path.exists():
+            return FileResponse(str(index_path))
+
+        raise HTTPException(status_code=404, detail="Frontend build not found. Run: cd frontend && npm run build")
 

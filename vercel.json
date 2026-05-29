@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "buildCommand": "cd frontend && npm install --legacy-peer-deps && npm run build",
+  "builds": [
+    {
+      "src": "api/index.py",
+      "use": "@vercel/python",
+      "config": {
+        "maxLambdaSize": "50mb",
+        "includeFiles": [
+          "backend/**",
+          "ai-llm/**",
+          "bright-data/**",
+          "frontend/dist/**"
+        ]
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "/api/index.py"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/api/index.py"
+    }
+  ]
+}
