@@ -270,7 +270,15 @@ async def run_agent_stream(competitor: str) -> AsyncGenerator[dict, None]:
 
     if BRIGHT_DATA_API_KEY and AIML_API_KEY:
         yield {"type": "thinking", "message": "Connecting to Bright Data MCP Server via SSE transport..."}
-        mcp_success, signals = await _run_mcp_agent(comp)
+        try:
+            mcp_success, signals = await asyncio.wait_for(
+                _run_mcp_agent(comp),
+                timeout=120  # 2 minute max for MCP — prevents infinite hang
+            )
+        except asyncio.TimeoutError:
+            print("[MCP] Timed out after 120s — falling back to manual pipeline.")
+            mcp_success = False
+            signals = []
         if mcp_success:
             for sig in signals:
                 yield {

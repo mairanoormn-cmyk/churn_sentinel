@@ -5,7 +5,7 @@ import json
 import os
 import httpx
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Union
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -28,7 +28,12 @@ app = FastAPI(title="Vanta API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+    ],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -39,12 +44,24 @@ class ScanRequest(BaseModel):
     competitor: str
 
 class BattlecardRequest(BaseModel):
-    signal_id: int
+    signal_id: Union[int, str]
     competitor: Optional[str] = None
+    # Inline signal data — used when signal_id is temp (not yet in DB)
+    company_name: Optional[str] = None
+    pain_point: Optional[str] = None
+    raw_text: Optional[str] = None
+    company_size: Optional[str] = None
+    industry: Optional[str] = None
 
 class PushRequest(BaseModel):
-    signal_id: int
+    signal_id: Union[int, str]
     crm_type: str = "HubSpot"
+    # Inline signal data for temp IDs
+    company_name: Optional[str] = None
+    pain_point: Optional[str] = None
+    raw_text: Optional[str] = None
+    source: Optional[str] = None
+    intent_score: Optional[int] = None
 
 class EnrichRequest(BaseModel):
     company_name: str
@@ -128,30 +145,77 @@ def get_signals(competitor: Optional[str] = None, job_id: Optional[str] = None):
 # ── Battle card endpoint ──────────────────────────────────────────────────────
 @app.post("/api/battlecard")
 async def generate_battlecard(request: BattlecardRequest):
-    signal = database.get_signal_by_id(request.signal_id)
-    if not signal:
-        raise HTTPException(status_code=404, detail="Signal not found")
+    signal_id = request.signal_id
+    signal = None
 
-    competitor = request.competitor
-    if not competitor:
-        job = database.get_job(signal["job_id"]) if signal.get("job_id") else None
-        competitor = job["competitor"] if job else "Competitor"
+    # Try to get from DB first (real integer ID)
+    if not (isinstance(signal_id, str) and str(signal_id).startswith("temp_")):
+        try:
+            signal = database.get_signal_by_id(int(signal_id))
+        except (ValueError, TypeError):
+            pass
 
-    print(f"[Generate Battlecard] Using competitor: {competitor}")
+    # If not in DB yet (temp ID or not found), use inline data from request
+    if signal is None:
+        if not request.company_name:
+            raise HTTPException(
+                status_code=400,
+                detail="Signal not found in DB and no inline data provided."
+            )
+        signal = {
+            "id": signal_id,
+            "job_id": None,
+            "company_name": request.company_name,
+            "pain_point": request.pain_point or "Dissatisfaction",
+            "raw_text": request.raw_text or "",
+            "company_size": request.company_size or "Unknown",
+            "industry": request.industry or "Technology",
+        }
 
-    # Use real AIML API to generate the battle card
+    competitor = request.competitor or "Competitor"
+    if not request.competitor and signal.get("job_id"):
+        job = database.get_job(signal["job_id"])
+        if job:
+            competitor = job["competitor"]
+
+    print(f"[Battlecard] Generating for '{signal['company_name']}' vs '{competitor}'")
     battlecard = await agent_module.generate_battlecard(signal, competitor)
-    database.update_signal_battlecard(request.signal_id, battlecard)
+
+    # Save to DB only if we have a real integer ID
+    if not (isinstance(signal_id, str) and str(signal_id).startswith("temp_")):
+        try:
+            database.update_signal_battlecard(int(signal_id), battlecard)
+        except Exception:
+            pass
+
     return battlecard
 
 # ── CRM push endpoint ─────────────────────────────────────────────────────────
 @app.post("/api/push-crm")
 async def push_crm(request: PushRequest):
-    signal = database.get_signal_by_id(request.signal_id)
-    if not signal:
-        raise HTTPException(status_code=404, detail="Signal not found")
+    signal_id = request.signal_id
+    signal = None
 
-    database.mark_signal_pushed(request.signal_id)
+    # Try DB first
+    if not (isinstance(signal_id, str) and str(signal_id).startswith("temp_")):
+        try:
+            signal = database.get_signal_by_id(int(signal_id))
+            if signal:
+                database.mark_signal_pushed(int(signal_id))
+        except (ValueError, TypeError):
+            pass
+
+    # Fallback to inline data
+    if signal is None:
+        if not request.company_name:
+            raise HTTPException(status_code=400, detail="Signal not found and no inline data provided.")
+        signal = {
+            "company_name": request.company_name,
+            "pain_point":   request.pain_point or "Dissatisfaction",
+            "raw_text":     request.raw_text or "",
+            "source":       request.source or "Web",
+            "intent_score": request.intent_score or 7,
+        }
 
     # Real HubSpot Integration (if configured)
     hubspot_token = os.getenv("HUBSPOT_ACCESS_TOKEN")
@@ -187,7 +251,7 @@ async def push_crm(request: PushRequest):
         "success": True,
         "message": msg,
         "crm_type": request.crm_type,
-        "signal_id": request.signal_id,
+        "signal_id": signal_id,
         "real_apis": {
             "hubspot": hubspot_sent
         }

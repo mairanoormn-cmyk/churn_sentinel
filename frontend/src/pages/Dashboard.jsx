@@ -127,13 +127,24 @@ function Drawer({ signal, competitor, onClose, onPushed }) {
 
   const generate = async () => {
     setLoading(true);
+    setLoadError(false);
     try {
       const res = await fetch(`${API}/api/battlecard`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ signal_id: signal.id, competitor }),
+        body: JSON.stringify({
+          signal_id:    signal.id,
+          competitor,
+          // Send inline signal data so backend works even with temp IDs
+          company_name: signal.company_name,
+          pain_point:   signal.pain_point,
+          raw_text:     signal.raw_text,
+          company_size: signal.company_size,
+          industry:     signal.industry,
+        }),
       });
+      if (!res.ok) { setLoadError(true); return; }
       setBattlecard(await res.json());
-    } catch (err) { console.error(err); } finally { setLoading(false); }
+    } catch (err) { console.error(err); setLoadError(true); } finally { setLoading(false); }
   };
 
   const push = async () => {
@@ -141,13 +152,17 @@ function Drawer({ signal, competitor, onClose, onPushed }) {
     try {
       const res = await fetch(`${API}/api/push-crm`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ signal_id: signal.id }),
+        body: JSON.stringify({
+          signal_id:    signal.id,
+          company_name: signal.company_name,
+          pain_point:   signal.pain_point,
+          raw_text:     signal.raw_text,
+          source:       signal.source,
+          intent_score: signal.intent_score,
+        }),
       });
       const data = await res.json();
-      if (data.success) {
-        setPushed(true);
-        onPushed(signal.id);
-      }
+      if (data.success) { setPushed(true); onPushed(signal.id); }
     } catch (err) { console.error(err); } finally { setPushing(false); }
   };
 
@@ -192,7 +207,7 @@ function Drawer({ signal, competitor, onClose, onPushed }) {
             <h4>No Battle Card yet</h4>
             <p>Generate a personalized outbound email and talking points powered by Claude Opus.</p>
             <button className="btn-generate" onClick={generate} disabled={loading}>
-              {loading ? <><div className="spinner" style={{width:14,height:14,borderWidth:2}} /> Generating…</> : 'Generate Battle Card'}
+              {loading ? <><div className="spinner" style={{width:14,height:14,borderWidth:2}} /> Generating…</> : loadError ? 'Retry Generation' : 'Generate Battle Card'}
             </button>
           </div>
         ) : (
@@ -361,21 +376,45 @@ function ScanWorkspace({ competitor, onBack }) {
   const [toast, setToast]         = useState(null);
   const feedRef  = useRef(null);
   const abortRef = useRef(null);
+  const jobIdRef = useRef(null); // track current job_id for DB signal refresh
 
   const showToast = (msg, type = 'success') => { setToast({ msg, type }); setTimeout(() => setToast(null), 3500); };
 
   useEffect(() => { if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight; }, [activity]);
   useEffect(() => { runScan(competitor); return () => { if (abortRef.current) abortRef.current.abort(); }; }, []);
+
+  // After scan completes, fetch signals from DB to get real integer IDs
+  // This replaces temp_N IDs with real DB IDs so battlecard/push-crm work
   useEffect(() => {
-    if (done && signals.length > 0) {
-      fetch(`${API}/api/signals?competitor=${encodeURIComponent(competitor)}`)
-        .then(r => r.json()).then(data => { if (data?.length > 0) setSignals(data); }).catch(() => {});
+    if (done && jobIdRef.current) {
+      // Small delay to ensure DB write is committed
+      const timer = setTimeout(() => {
+        fetch(`${API}/api/signals?job_id=${encodeURIComponent(jobIdRef.current)}`)
+          .then(r => r.json())
+          .then(data => {
+            if (Array.isArray(data) && data.length > 0) {
+              setSignals(data);
+              // Also update selected signal if drawer is open
+              setSelected(prev => {
+                if (!prev) return null;
+                const refreshed = data.find(s =>
+                  s.company_name === prev.company_name &&
+                  s.pain_point   === prev.pain_point
+                );
+                return refreshed || prev;
+              });
+            }
+          })
+          .catch(() => {});
+      }, 800);
+      return () => clearTimeout(timer);
     }
   }, [done]);
 
   const runScan = async (comp) => {
     setScanning(true); setDone(false); setActivity([]); setSignals([]); setSelected(null);
     setStats({ searches: 0, scrapes: 0, tool_calls: 0 });
+    jobIdRef.current = null;
     const ctrl = new AbortController(); abortRef.current = ctrl;
     let searches = 0, scrapes = 0, tools = 0;
     try {
@@ -394,7 +433,7 @@ function ScanWorkspace({ competitor, onBack }) {
           let event; try { event = JSON.parse(raw); } catch (_) { continue; }
           const t = event.type;
           if (t === 'stream_end' || t === 'done') { setScanning(false); setDone(true); continue; }
-          if (t === 'job_created') continue;
+          if (t === 'job_created') { jobIdRef.current = event.job_id; continue; }
           if (t === 'tool_call') { tools++; if (event.tool === 'search_web') searches++; if (event.tool === 'scrape_url') scrapes++; setStats({ searches, scrapes, tool_calls: tools }); }
           if (t === 'signals_ready' && event.signals) setSignals(event.signals.map((s, i) => ({ ...s, id: s.id ?? `temp_${i + 1}` })));
           if (t === 'complete') { setScanning(false); setDone(true); }
