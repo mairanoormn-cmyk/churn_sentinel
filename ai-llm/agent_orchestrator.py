@@ -605,7 +605,7 @@ async def enrich_lead(company_name: str, industry: str) -> list:
     generic_keywords = [
         "mid-market", "enterprise", "saas company", "healthcare clinic",
         "marketing agency", "technology company", "organization", "startup",
-        "provider", "database", "team", "business"
+        "provider", "database", "team", "business", "company"
     ]
     is_generic = any(kw in company_name.lower() for kw in generic_keywords)
 
@@ -647,7 +647,122 @@ For each real person found, extract:
 - linkedin: Their LinkedIn URL if found, otherwise construct from name
 
 RULES:
-- Only use REAL names found in the data — no invented names
+- Only return REAL people with REAL names found in the data
+- If no real contacts found, return search guidance instead
+- Return ONLY a JSON array: [{{"name":"...","title":"...","email":"...","linkedin":"..."}}]
+- No markdown, no explanations
+
+Example:
+[{{"name":"Sarah Chen","title":"VP of Sales","email":"sarah.chen@acmecorp.com","linkedin":"https://linkedin.com/in/sarahchen"}}]"""
+
+            combined = "\n\n".join(collected)
+            prompt = f"""You are a B2B sales intelligence agent. From this web data, identify 2-3 REAL decision makers at {industry} companies who would be good prospects.
+
+Web data:
+{combined}
+
+For each real person found, extract:
+- name: Their actual full name from the data
+- title: Their actual job title
+- email: Construct as firstname.lastname@company.com (use their real company domain)
+- linkedin: Their LinkedIn URL if found, otherwise construct from name
+
+RULES:
+- Only return REAL people with REAL names found in the data
+- If no real contacts found, return guidance on how to search for them
+- Return ONLY a JSON array: [{{"name":"...","title":"...","email":"...","linkedin":"..."}}]
+- No markdown, no explanations
+
+Example:
+[{{"name":"Sarah Chen","title":"VP of Sales","email":"sarah.chen@acmecorp.com","linkedin":"https://linkedin.com/in/sarahchen"}}]"""
+
+            try:
+                async with httpx.AsyncClient(timeout=45) as client:
+                    resp = await client.post(
+                        "https://api.aimlapi.com/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {AIML_API_KEY}",
+                            "Content-Type":  "application/json",
+                        },
+                        json={
+                            "model":       AIML_MODEL,
+                            "messages":    [{"role": "user", "content": prompt}],
+                            "temperature": 0.3,
+                        },
+                    )
+                    if resp.status_code == 200:
+                        raw = resp.json()["choices"][0]["message"]["content"].strip()
+                        if raw.startswith("```"):
+                            lines = raw.splitlines()
+                            lines = lines[1:] if lines[0].startswith("```") else lines
+                            lines = lines[:-1] if lines and lines[-1].startswith("```") else lines
+                            raw   = "\n".join(lines).strip()
+                        raw = _extract_json_array(raw)
+                        contacts = json.loads(raw)
+                        if isinstance(contacts, list) and len(contacts) > 0:
+                            return contacts
+            except Exception as e:
+                print(f"[Enrichment] Error: {e}")
+
+        # If no real contacts found, return search guidance
+        return [
+            {
+                "name": f"Search LinkedIn for '{industry} VP of Sales'",
+                "title": "Decision Maker",
+                "email": f"Use LinkedIn Sales Navigator to find contacts at {industry} companies",
+                "linkedin": f"https://www.linkedin.com/search/results/people/?keywords={industry.replace(' ', '%20')}%20VP%20Sales"
+            }
+        ]
+
+    else:
+        # Strategy: Try to find real contacts at the specific company
+        print(f"[Enrichment] Searching for contacts at {company_name}...")
+
+        contact_queries = [
+            f'site:linkedin.com "{company_name}" "VP of Sales" OR "Head of Revenue" OR "CTO"',
+            f'"{company_name}" contact OR email OR "reach out" site:linkedin.com',
+            f'site:linkedin.com/in "{company_name}" decision maker OR executive',
+        ]
+
+        for q in contact_queries:
+            try:
+                res = await search_web_async(q, num=5)
+                if res.get("success") and res.get("results"):
+                    for r in res["results"]:
+                        snippet = r.get("snippet", "").strip()
+                        title   = r.get("title", "").strip()
+                        url     = r.get("url", "")
+                        if snippet and len(snippet) > 20:
+                            collected.append(f"Source: {url}\nTitle: {title}\nSnippet: {snippet}")
+            except Exception as e:
+                print(f"[Enrichment] SERP error: {e}")
+
+        if not collected:
+            # No data found — return search guidance
+            safe_name = company_name.replace(" ", "%20")
+            return [
+                {
+                    "name": f"Search LinkedIn for contacts at {company_name}",
+                    "title": "Decision Maker",
+                    "email": f"Use LinkedIn Sales Navigator or company website",
+                    "linkedin": f"https://www.linkedin.com/search/results/people/?keywords={safe_name}"
+                }
+            ]
+
+        combined = "\n\n".join(collected)
+        prompt = f"""You are a B2B sales intelligence agent. From this web data, identify 1-2 REAL decision makers at {company_name}.
+
+Web data:
+{combined}
+
+For each real person found, extract:
+- name: Their actual full name from the data
+- title: Their actual job title
+- email: Construct as firstname.lastname@{safe_domain}.com
+- linkedin: Their LinkedIn URL if found, otherwise construct from name
+
+RULES:
+- Only REAL names found in the data — no invented names
 - If a LinkedIn profile is found, extract the person's name and company
 - Return ONLY a JSON array
 
